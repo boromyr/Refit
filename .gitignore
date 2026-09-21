@@ -1,0 +1,4 @@
+*.step
+*.txt
+.bak/
+/__pycache__/*
