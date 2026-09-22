@@ -202,6 +202,80 @@ prese, quindi l'insieme delle regioni trovate puo' cambiare di poco rispetto a
 -j 1; ogni regione resta comunque verificata e scartata con gli stessi
 criteri. Per un risultato riproducibile al 100% si usa -j 1.
 
+UNA FACCIA DEL CAD, UNA FACCIA NOSTRA
+-------------------------------------
+La crescita parte da semi diversi, e una parete lunga finisce spesso in due o
+tre regioni con la stessa identica superficie: nel file diventano due o tre
+facce separate da spigoli che nel CAD non ci sono, e in mezzo restano le
+faccette che nessuna delle due ha preso - le "schegge". Per questo le regioni
+confinanti che giacciono sulla STESSA superficie vengono riunite e rifittate.
+⚠️ TRE COSE CHE SEMBRANO DETTAGLI E NON LO SONO.
+ 1. Si rifonde DUE VOLTE: dopo i semi e di nuovo alla fine. Due pezzi separati
+    da qualche faccetta sciolta non si toccano nemmeno, e alla prima passata
+    passano indenni: diventano confinanti solo dopo il recupero delle sciolte.
+ 2. Il confronto fra le due primitive e' un FILTRO, non la sentenza. Chiedere
+    assi entro 0,05 gradi non ha senso per due pezzi della stessa parete: un
+    cilindro fittato su dieci faccette che coprono venti gradi ha il fit mal
+    condizionato (raggio e centro si compensano) e l'asse incerto di qualche
+    decimo. Si allarga a un grado e al 2% del raggio, e decide il rifit
+    dell'unione col metro di tol_grow - che e' gia' la definizione di "vicino"
+    con cui le regioni sono cresciute. Un gradino vero fra due alesaggi (due
+    centesimi) lo sfonda di sei volte e resta due facce.
+ 3. L'unione non deve STROZZARSI: se il bordo unito ha un anello interno che
+    tocca quello esterno in un vertice, BRepCheck in memoria la accetta ma
+    dopo la scrittura STEP la faccia diventa "IntersectingWires" e il pezzo
+    non e' piu' valido. Quelle si lasciano separate.
+Misurato su test10 contro il file CAD vero: il cilindro R=3 usciva spezzato in
+due facce da 10,5 e 2,4 mm2 con tre schegge piane in mezzo, dove il CAD ha UNA
+faccia da 13,697 mm2. Ora e' una faccia da 13,722 e le schegge non ci sono
+piu' (55 facce contro le 51 del CAD, erano 59).
+
+IL TETTO SUL VOLUME CONTA ANCHE I VICINI
+----------------------------------------
+Ogni sostituzione passa da un controllo di volume. Il tetto era calcolato
+sulla sola area della regione, ma sostituire una regione non muove solo la sua
+faccia: i bordi poligonali che la toccano diventano curve e le facce vicine si
+rifanno con quelle. Una calotta sferica R0,5 da mezzo mm2 incastrata fra tre
+facce da 1, 5 e 12 mm2 sforava di un soffio (+0,0555 contro 0,0513) e restava
+tassellata - mentre due calotte IDENTICHE, altrove, passavano. E' esattamente
+il "geometrie identiche, risultati diversi" che si vede aprendo il file.
+⚠️ Su test5 il controllo bocciava 66 conversioni e NESSUNA oltre quattro volte
+il tetto: non stava piu' prendendo errori veri, solo conversioni buone. Il
+tetto nuovo e' un limite VERO e non una stima - se nessuna faccia si sposta di
+piu' di dev, il volume racchiuso non puo' cambiare di piu' dell'area toccata
+per dev - e non stringe mai quello di prima.
+
+E POI GLI ARCHI (ultimo passo, --no-arcs per spegnerlo)
+-------------------------------------------------------
+Finite le fasi, si guarda il B-Rep FINITO e si chiede a ogni catena di segmenti
+rettilinei: stai su un cerchio? Serve perche' il motore rifa' con la curva
+esatta solo i bordi di cui sa calcolare l'intersezione, e lascia tutto il resto
+com'era - su test5, 4.862 bordi riusati contro 328 rifatti. Cosi' un cilindro e
+il piano su cui sbuca si toccavano ancora lungo una spezzata di sei segmenti.
+Misurato su test5: delle 249 catene sostituibili (vertici interni di grado 2 e
+sempre le stesse due facce ai lati) 110 stanno su un cerchio a meno di un
+MICRON, e i raggi sono quelli del disegno - R0.5 cinquantatre volte, R0.3
+diciotto, R0.8 otto. Non e' un'approssimazione: e' lo spigolo vero del CAD che
+la tassellatura aveva spezzato, e rimetterlo avvicina il pezzo all'originale.
+Ogni arco viene verificato SULLE DUE FACCE che lo toccano prima di essere
+accettato, e alla fine si ricontrolla il pezzo intero: se non regge si rinuncia
+a tutti insieme.
+  pezzo    spigoli           archi   volume
+  test5    5.962 -> 5.687     51     +0,0003%   (cerchi da 277 a 328)
+  test10   1.039 ->   819     16     +0,0033%
+  test6      666 ->   548     19     +0,0038%
+  test2    1.106 ->   927     10     -0,0015%
+  test4    1.203 -> 1.106      6     -0,0074%
+Nessuna faccia si muove, la fedelta' non cambia (test5: scarto medio dalla mesh
+0,00082 mm prima e dopo, massimo 0,044).
+⚠️ DUE TRAPPOLE, tutte e due costate ore. (1) La terna della SVD non e' detta
+destrorsa: gp_Ax2(P, N, X) misura l'angolo da X verso N x X, quindi usando
+vt[1] come asse Y meta' degli archi esce specchiata. (2) MakeEdge(cerchio,
+V1, V2) prende l'arco che va da V1 a V2 a parametro CRESCENTE: scambiando i
+due vertici senza girare anche il cerchio si prende l'arco COMPLEMENTARE -
+300 gradi al posto di 60 - che in (u,v) sbuca dall'altra parte della
+superficie e fa "UnorientableShape".
+
 LE DUE TOLLERANZE, CHE NON SI PARLANO
 -------------------------------------
 Sono due, indipendenti, e regolano cose diverse. Confonderle e' il modo piu'
@@ -3572,6 +3646,9 @@ def describe_region(prim: "Prim", topo: Topo, faces: List[int]) -> Region:
     return R
 
 
+_COS_QUASI = math.cos(math.radians(1.0))
+
+
 def prims_equal(pa: "Prim", pb: "Prim", tol_len: float) -> bool:
     return prims_same(pa, pb, tol_len, math.cos(math.radians(0.05)))
 
@@ -4054,6 +4131,137 @@ class Segmenter:
         f2, t2 = self._seed_loop([s for s in pending if not self.taken[s]], tries)
         return found + f2, tried + t2
 
+    @staticmethod
+    def _pinch_count(topo, rf) -> int:
+        """
+        Vertici dove il bordo della regione si STROZZA: piu' di due spigoli di
+        bordo nello stesso punto. E' un anello interno che tocca quello esterno.
+        """
+        rset = set(rf)
+        cnt: Dict[int, int] = defaultdict(int)
+        for i in rf:
+            for k in topo.f_edges[i]:
+                fs = topo.e_faces[k]
+                if len(fs) == 2 and sum(1 for f in fs if f in rset) == 1:
+                    for j in topo.e_verts[k]:
+                        cnt[j] += 1
+        return sum(1 for c in cnt.values() if c > 2)
+
+    def _worth_merging(self, pa: "Prim", pb: "Prim", tol_len: float) -> bool:
+        """
+        Vale la pena PROVARE a fondere queste due? La parola definitiva la da'
+        il rifit dell'unione: questo e' solo il filtro che evita di provarle
+        tutte.
+        ⚠️ prims_equal DA SOLO E' TROPPO SEVERO PER DUE PEZZI DELLA STESSA
+        PARETE. Chiede assi entro 0,05 gradi, ma un cilindro fittato su dieci
+        faccette che coprono 20 gradi ha il suo asse incerto di qualche decimo:
+        i due pezzi del cilindro R=3 di test10 escono a 0,14 e 0,28 gradi l'uno
+        dall'altro e non si fondevano. Qui si allarga a un grado e al 2% del
+        raggio - abbastanza per l'incertezza del fit, troppo poco per unire due
+        pareti diverse (nelle zone di raccordo a forma libera i "cilindri"
+        vicini stanno a 2-13 gradi).
+        """
+        if prims_equal(pa, pb, tol_len):
+            return True
+        if pa is None or pb is None or pa.kind != pb.kind:
+            return False
+        if pa.kind in (PLANE, FREE):
+            return False
+        r = max(prim_radius(pa), prim_radius(pb), 1e-9)
+        lim = max(tol_len, 0.02 * r)
+        if pa.kind == SPHERE:
+            return float(np.linalg.norm(pa.center - pb.center)) <= lim and abs(pa.r0 - pb.r0) <= lim
+        if pa.axis is None or pb.axis is None:
+            return False
+        cos_ax = abs(float(pa.axis @ pb.axis))
+        if cos_ax < _COS_QUASI:
+            return False
+        if pa.kind == TORUS:
+            if abs(pa.r0 - pb.r0) > lim or abs(pa.r1 - pb.r1) > lim:
+                return False
+        else:
+            sgn = 1.0 if float(pa.axis @ pb.axis) > 0 else -1.0
+            if abs(pa.slope - sgn * pb.slope) > 0.02:
+                return False
+            if abs(prim_radius(pa) - prim_radius(pb)) > lim:
+                return False
+        d = pb.center - pa.center
+        return float(np.linalg.norm(d - float(d @ pa.axis) * pa.axis)) <= lim
+
+    def _merge_cosurface(self, found, tag: str = ""):
+        """
+        Regioni CONFINANTI che giacciono sulla STESSA superficie: una sola.
+        ⚠️ SENZA QUESTO IL MODELLO SI SPACCA: la crescita parte da semi diversi
+        e una parete lunga finisce spesso in due regioni con la stessa identica
+        primitiva, che nel file diventano due facce separate da uno spigolo che
+        nel CAD non c'e'.
+        Si rifitta l'unione e si accetta solo se la superficie unica spiega
+        TUTTI i vertici entro tol_fit: se non li spiega, erano due davvero.
+        """
+        topo = self.topo
+        tol_len = max(50.0 * self.tol_fit, 1e-5 * self.diag)
+        n0 = len(found)
+        changed = True
+        while changed and len(found) > 1:
+            changed = False
+            owner = {}
+            for k, (_, rf) in enumerate(found):
+                for i in rf:
+                    owner[i] = k
+            for k in range(len(found)):
+                pa, ra = found[k]
+                if pa is None:
+                    continue
+                nbrs = {owner[j] for i in ra for j in topo.adj[i] if j in owner and owner[j] != k}
+                for q in sorted(nbrs):
+                    pb, rb = found[q]
+                    if pb is None or not self._worth_merging(pa, pb, tol_len):
+                        continue
+                    union = sorted(set(ra) | set(rb))
+                    p = refit_exact(union, topo.verts, topo.norms, topo.areas, pa.kind)
+                    if p is None:
+                        continue
+                    if abs(p.slope) < 1e-9:
+                        p.slope = 0.0
+                    p = self._snap_cylinder(p, union)
+                    # ⚠️ IL METRO E' tol_grow, NON tol_fit. tol_fit e' la soglia
+                    # per dire "questa faccetta e' su questa superficie": la
+                    # distanza fra due pezzi della STESSA parete fittati
+                    # separatamente e' un'altra cosa. Un arco di venti gradi ha
+                    # il fit mal condizionato - raggio e centro si compensano -
+                    # e i suoi vertici stanno a un micron dal cilindro che
+                    # spiega tutto il resto: con tol_fit la fusione non scattava
+                    # quasi mai (su test10 zero volte) e il cilindro R=3 restava
+                    # spezzato in tre facce con tre schegge in mezzo, dove il
+                    # CAD ha UNA faccia. tol_grow e' gia' la definizione di
+                    # "vicino" con cui le regioni sono cresciute, ed e' stretta
+                    # abbastanza: un gradino vero fra due alesaggi (2 centesimi)
+                    # la sfonda di sei volte e resta due facce.
+                    P = np.vstack([topo.verts[i] for i in union])
+                    if float(np.abs(p.dist(P)).max()) > self.tol_grow:
+                        continue
+                    # ⚠️ E NON DEVE STROZZARSI. Fondendo quattro pezzetti di
+                    # sfera da 0,015 mm2 usciva una faccia con l'anello interno
+                    # che tocca quello esterno in un vertice: BRepCheck in
+                    # memoria la accetta, ma dopo il giro di scrittura e
+                    # rilettura STEP diventa "IntersectingWires" e il pezzo non
+                    # e' piu' valido (misurato su test5). Se l'unione strozza
+                    # dove i pezzi non strozzavano, si lasciano separati.
+                    if self._pinch_count(topo, union) > max(
+                        self._pinch_count(topo, ra), self._pinch_count(topo, rb)
+                    ):
+                        continue
+                    found[k] = (p, union)
+                    found[q] = (None, [])
+                    changed = True
+                    break
+                if changed:
+                    break
+            found = [(p, rf) for p, rf in found if p is not None]
+        if tag and len(found) < n0:
+            Log.debug(f"Fusione co-superficie ({tag}): {n0} -> {len(found)} regioni")
+        return found
+
     def run(self) -> List[Region]:
         topo = self.topo
         nF = topo.nF
@@ -4074,40 +4282,7 @@ class Segmenter:
         # test10: un cilindro da 13.7 mm2 spezzato in due coni da 10.4 e 2.4).
         # Snap a cilindro PRIMA del confronto e si fondono da soli.
         found = [(self._snap_cylinder(pp, rf), rf) for pp, rf in found]
-        # --- fusione delle regioni confinanti sulla STESSA superficie ------------
-        tol_len = max(50.0 * self.tol_fit, 1e-5 * self.diag)
-        changed = True
-        while changed and len(found) > 1:
-            changed = False
-            owner = {}
-            for k, (_, rf) in enumerate(found):
-                for i in rf:
-                    owner[i] = k
-            for k in range(len(found)):
-                pa, ra = found[k]
-                if pa is None:
-                    continue
-                nbrs = {owner[j] for i in ra for j in topo.adj[i] if j in owner and owner[j] != k}
-                for q in sorted(nbrs):
-                    pb, rb = found[q]
-                    if pb is None or not prims_equal(pa, pb, tol_len):
-                        continue
-                    union = sorted(set(ra) | set(rb))
-                    p = refit_exact(union, topo.verts, topo.norms, topo.areas, pa.kind)
-                    if p is None:
-                        continue
-                    if abs(p.slope) < 1e-9:
-                        p.slope = 0.0
-                    P = np.vstack([topo.verts[i] for i in union])
-                    if float(np.abs(p.dist(P)).max()) > self.tol_fit:
-                        continue
-                    found[k] = (p, union)
-                    found[q] = (None, [])
-                    changed = True
-                    break
-                if changed:
-                    break
-            found = [(p, rf) for p, rf in found if p is not None]
+        found = self._merge_cosurface(found, "dopo i semi")
 
         found = self.relabel(found)
         regions = [describe_region(p, topo, rf) for p, rf in found]
@@ -4138,6 +4313,14 @@ class Segmenter:
         found = self._absorb_free([(R.prim, list(R.faces)) for R in regions])
         found = self._wedged(found)
         found = [(self._snap_cylinder(pp, rf), rf) for pp, rf in found]
+        # ⚠️ E SI RIFONDE. La prima passata guarda le regioni COME ESCONO DAI
+        # SEMI: due pezzi della stessa parete separati da qualche faccetta
+        # sciolta non si toccano nemmeno, e passano indenni. Solo dopo il
+        # recupero delle sciolte (_absorb_free) e il secondo raddrizzamento a
+        # cilindro diventano confinanti e confrontabili. Misurato su test10:
+        # il cilindro R=3 usciva spezzato in due facce da 10.5 e 2.4 mm2 con
+        # tre schegge in mezzo, e nel CAD e' UNA faccia sola.
+        found = self._merge_cosurface(found, "dopo il recupero")
         regions = [describe_region(pp, topo, rf) for pp, rf in found]
         regions = self._blend_patches(regions)
         regions.sort(key=lambda R: -sum(topo.areas[i] for i in R.faces))
@@ -4275,6 +4458,16 @@ class Segmenter:
             if abs(q.slope) > 1e-12:
                 q = Prim(AXIAL, q.center, q.axis, q.r0, 0.0)
             if all(self.within(q, i) for i in rf):
+                return q
+            # ⚠️ OPPURE: IL CILINDRO NON SPIEGA PEGGIO DEL CONO. Dopo una
+            # fusione il rifit dell'unione esce quasi sempre conico (il fit
+            # assiale ha un grado di liberta' in piu' e lo usa): un semiangolo
+            # di 0.04 gradi e' un cilindro, ma i suoi vertici stanno appena
+            # oltre face_tol e lo snap non scattava, lasciando nel file un
+            # CONICAL_SURFACE dove il CAD ha un CYLINDRICAL_SURFACE.
+            d_cono = float(np.abs(p.dist(P)).max())
+            d_cil = float(np.abs(q.dist(P)).max())
+            if d_cil <= max(1.05 * d_cono, self.tol_fit):
                 return q
         except Exception:
             pass
@@ -6158,7 +6351,7 @@ class Engine:
                 # tolleranza; uno scarto di ~2pi e' un errore di svolgimento
                 r_eff = max(prim_radius(sp.prim), 1e-3)
                 if gap * r_eff > 4.0 * self.max_edge_tol:
-                    return f"wire non chiuso nei parametri (scarto {gap:.1e})"
+                    return f"wire non chiuso nei parametri (scarto {gap:.1e}, du {u_prev - u_start:+.3f} dv {v_prev - v_start:+.3f})"
             out.append((w, worst, worst_own))
         return out
 
@@ -6249,7 +6442,21 @@ class Engine:
         # volume
         v1 = shape_volume(new_shape)
         v0 = self.vol0 if self.vol0 else shape_volume(self.shape)
-        bound = 10.0 * a_mesh * max(R.sag, self.tol_fit) + 1e-9 * abs(v0) + 2e-3
+        # ⚠️ IL TETTO DEVE CONTARE ANCHE I VICINI. Sostituire una regione non
+        # muove solo la sua faccia: i bordi poligonali che la toccano diventano
+        # curve, e le facce vicine si rifanno con quelle. Con il tetto calcolato
+        # sulla sola area della regione, una calotta sferica R0.5 da mezzo mm2
+        # incastrata fra tre facce da 1, 5 e 12 mm2 sforava di un soffio
+        # (+0,0555 contro 0,0513) e restava tassellata - due calotte identiche
+        # a due identiche altre che invece passavano. Su test5 il controllo del
+        # volume bocciava 66 conversioni e NESSUNA di piu' di quattro volte il
+        # tetto: non stava piu' prendendo errori veri, solo conversioni buone.
+        # Il nuovo tetto e' un limite VERO, non una stima: se nessuna faccia si
+        # sposta di piu' di dev, il volume racchiuso non puo' cambiare di piu'
+        # dell'area toccata per dev. E non stringe mai quello di prima.
+        dev = max(R.sag, self.tol_fit)
+        a_touch = face_area(Fo) + sum(face_area(self.registry.FindKey(k)) for k in touched)
+        bound = max(10.0 * a_mesh, a_touch) * dev + 1e-9 * abs(v0) + 2e-3
         if abs(v1 - v0) > bound:
             if self.verbose:
                 Log.debug(
@@ -6409,6 +6616,294 @@ def _prim_signature(p: "Prim"):
     if p.kind == TORUS:
         return (TORUS, round(float(p.r0), 3), round(float(p.r1), 3))
     return (p.kind, round(prim_radius(p), 3))
+
+
+# ---------------------------------------------------------------------------
+# 10b. SPEZZATE -> ARCHI (le curve del CAD che erano rimaste poligonali)
+# ---------------------------------------------------------------------------
+#
+# Quando una regione viene convertita, il motore rifa' con la curva esatta solo
+# i bordi per cui SA calcolare l'intersezione fra le due superfici; tutto il
+# resto lo lascia com'era ("riusati"). Su un pezzo vero quelli sono la
+# maggioranza: su test5, 4.862 bordi riusati contro 328 rifatti. Cosi' due
+# facce analitiche gia' a posto - un cilindro e il piano su cui sbuca - si
+# toccano ancora lungo una spezzata di sei segmenti.
+# Qui si guarda il B-Rep FINITO e si chiede: questa catena di segmenti sta su un
+# cerchio? Misurato su test5: 110 catene su 249 ci stanno a meno di un micron, e
+# i raggi sono quelli del disegno - R0.5 cinquantatre volte, R0.3 diciotto,
+# R0.8 otto. Non e' un'approssimazione che si concede: e' lo spigolo vero del
+# CAD, che la tassellatura aveva spezzato.
+
+
+def _is_line_edge(e) -> bool:
+    try:
+        return BRepAdaptor_Curve(td_Edge(e)).GetType() == GeomAbs_Line
+    except Exception:
+        return False
+
+
+class _ArcSurf:
+    """SurfParam minimale sopra una Geom_Surface qualunque, per make_pcurve."""
+
+    def __init__(self, surf):
+        self.s = surf
+        self.periodic_u = bool(surf.IsUPeriodic())
+        self.periodic_v = bool(surf.IsVPeriodic())
+        self._pr = _m("GeomAPI").GeomAPI_ProjectPointOnSurf()
+
+    def uv(self, P):
+        P = np.atleast_2d(P)
+        u = np.empty(len(P))
+        v = np.empty(len(P))
+        for i, q in enumerate(P):
+            self._pr.Init(_mk_pnt(q), self.s)
+            if self._pr.NbPoints() < 1:
+                u[i] = v[i] = np.nan
+            else:
+                u[i], v[i] = self._pr.LowerDistanceParameters()
+        return u, v
+
+    def point(self, u, v):
+        u = np.atleast_1d(np.asarray(u, float))
+        v = np.atleast_1d(np.asarray(v, float))
+        out = np.empty((len(u), 3))
+        for i in range(len(u)):
+            q = self.s.Value(float(u[i]), float(v[i]))
+            out[i] = (q.X(), q.Y(), q.Z())
+        return out
+
+
+def _arc_fit_circle(P: np.ndarray):
+    """(centro, raggio, normale, X, Y, scarto max) del cerchio per i punti P."""
+    c0 = P.mean(axis=0)
+    Q = P - c0
+    _, _, vt = np.linalg.svd(Q, full_matrices=False)
+    nrm = vt[2]
+    fuori_piano = float(np.abs(Q @ nrm).max())
+    # (!) TERNA DESTRORSA, obbligatorio. La SVD non garantisce che vt[0] x vt[1]
+    # faccia vt[2]: una volta su due esce sinistrorsa. gp_Ax2(P, N, X) invece
+    # misura l'angolo da X verso N x X, quindi se si usa vt[1] come asse Y per
+    # calcolare gli angoli, meta' delle volte i parametri passati a MakeEdge
+    # sono quelli dell'arco specchiato e l'arco viene scartato.
+    X = vt[0]
+    Y = np.cross(nrm, X)
+    Y = Y / max(float(np.linalg.norm(Y)), 1e-300)
+    xy = np.c_[Q @ X, Q @ Y]
+    A = np.c_[2 * xy, np.ones(len(xy))]
+    b = (xy ** 2).sum(axis=1)
+    try:
+        sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+    except np.linalg.LinAlgError:
+        return None
+    cen = sol[:2]
+    r2 = sol[2] + cen @ cen
+    if not np.isfinite(r2) or r2 <= 0:
+        return None
+    rad = math.sqrt(r2)
+    dev = float(np.abs(np.linalg.norm(xy - cen, axis=1) - rad).max())
+    return c0 + cen[0] * X + cen[1] * Y, rad, nrm, X, Y, max(dev, fuori_piano)
+
+
+def _arc_chains(topo: "Topo"):
+    """
+    Catene massimali di spigoli RETTILINEI consecutivi sostituibili con un solo
+    spigolo: i vertici interni devono avere grado 2 (nessun'altra faccia si
+    affaccia li') e le due facce ai lati devono essere sempre le stesse.
+    Ritorna [(spigoli, vertici in ordine, [faccia, faccia]), ...].
+    """
+    nE = len(topo.edges)
+    lin = [_is_line_edge(topo.edges[k]) for k in range(nE)]
+    ef = {}
+    for i in range(topo.nF):
+        for k in topo.f_edges[i]:
+            ef.setdefault(k, []).append(i)
+    ve = {}
+    for k in range(nE):
+        a, b = topo.e_verts[k]
+        ve.setdefault(a, []).append(k)
+        ve.setdefault(b, []).append(k)
+    usato = set()
+    out = []
+    for v0 in list(ve):
+        if len(ve[v0]) == 2:
+            continue                       # vertice interno: non e' un capo
+        for e0 in ve[v0]:
+            if e0 in usato or not lin[e0]:
+                continue
+            facce = frozenset(ef.get(e0, ()))
+            if len(facce) != 2:
+                continue
+            cat = [e0]
+            usato.add(e0)
+            a, b = topo.e_verts[e0]
+            v = b if a == v0 else a
+            seq = [v0, v]
+            while len(ve[v]) == 2:
+                nxt = [k for k in ve[v] if k != cat[-1]]
+                if not nxt or nxt[0] in usato or not lin[nxt[0]]:
+                    break
+                if frozenset(ef.get(nxt[0], ())) != facce:
+                    break
+                k = nxt[0]
+                cat.append(k)
+                usato.add(k)
+                a, b = topo.e_verts[k]
+                v = b if a == v else a
+                seq.append(v)
+            if len(cat) >= 3:
+                out.append((cat, seq, sorted(facce)))
+    return out
+
+
+def _arc_wire_anchor(F_new, E_new):
+    """(u_prev, v_prev, percorso in avanti) per E_new nel wire della faccia."""
+    cos_ = _st(BRep_Tool, "CurveOnSurface")
+    for w in explore(F_new, TopAbs_WIRE):
+        ex = _BRepTools.BRepTools_WireExplorer(_TopoDS.TopoDS.Wire_s(w), F_new)
+        seq = []
+        while ex.More():
+            seq.append(td_Edge(ex.Current()))
+            ex.Next()
+        for i, e in enumerate(seq):
+            if not e.IsSame(E_new):
+                continue
+            fwd = e.Orientation() == TopAbs_FORWARD
+            if len(seq) == 1:
+                return None, None, fwd
+            pre = seq[i - 1]
+            try:
+                c2d = cos_(pre, F_new, 0.0, 0.0)
+                a, b = bt_Range(pre)
+                q = c2d.Value(b if pre.Orientation() == TopAbs_FORWARD else a)
+                return float(q.X()), float(q.Y()), fwd
+            except Exception:
+                return None, None, fwd
+    return None, None, None
+
+
+def snap_arcs(shape, tol: float, title: str = "Archi"):
+    """
+    Sostituisce con un arco di cerchio esatto ogni catena di segmenti che su un
+    cerchio ci sta davvero. Ogni sostituzione viene verificata SULLE DUE FACCE
+    che la toccano prima di essere accettata, e alla fine si ricontrolla il
+    pezzo intero: se qualcosa non torna si rinuncia a tutte insieme.
+    """
+    t0 = time.perf_counter()
+    topo = Topo(shape)
+    cands = _arc_chains(topo)
+    if not cands:
+        Log.info(f"{title}: nessuna spezzata sostituibile   "
+                 f"[{time.perf_counter() - t0:.2f}s]")
+        return shape, 0
+    bb = BRep_Builder()
+    rs = BRepTools_ReShape()
+    fatti = 0
+    for cat, seq, facce in cands:
+        P = topo.vpos[np.array(seq)]
+        dr = P[-1] - P[0]
+        L = float(np.linalg.norm(dr))
+        if L < 1e-12:
+            continue                       # catena chiusa su se stessa
+        d0 = P - P[0]
+        dr = dr / L
+        dev_retta = float(np.linalg.norm(d0 - np.outer(d0 @ dr, dr), axis=1).max())
+        fit = _arc_fit_circle(P)
+        if fit is None:
+            continue
+        cen, rad, nrm, X, Y, dev = fit
+        # (!) il cerchio deve spiegare la catena MOLTO meglio della retta: una
+        # spezzata quasi dritta passa per un cerchio qualunque e non vuol dire
+        # niente.
+        if not (dev <= tol and dev < 0.2 * dev_retta and rad < 1e4):
+            continue
+        ang = np.unwrap(np.arctan2((P - cen) @ Y, (P - cen) @ X))
+        d_ang = np.diff(ang)
+        if not (np.all(d_ang > 0) or np.all(d_ang < 0)):
+            continue                       # non gira sempre dalla stessa parte
+        if abs(ang[-1] - ang[0]) >= 2 * math.pi - 1e-9:
+            continue
+        # (!) IL VERSO. Lo spigolo nuovo prende il posto del PRIMO della catena
+        # e ne eredita il flag di orientamento nei due wire: il suo verso
+        # naturale deve essere quello. E l'arco va preso fra i due parametri
+        # GIUSTI: con i vertici scambiati e il cerchio fermo si prende l'arco
+        # COMPLEMENTARE - 300 gradi al posto di 60 - che in (u,v) sbuca
+        # dall'altra parte della superficie e fa "UnorientableShape".
+        va, _vb = topo.e_verts[cat[0]]
+        testa = va == seq[0]
+        i1, i2 = (seq[0], seq[-1]) if testa else (seq[-1], seq[0])
+        p1, p2 = (ang[0], ang[-1]) if testa else (ang[-1], ang[0])
+        if p2 < p1:
+            nrm, p1, p2 = -nrm, -p1, -p2
+        ax2 = gp_Ax2(_mk_pnt(cen), _mk_dir(nrm), _mk_dir(X))
+        circ = _keep(Geom_Circle(ax2, float(rad)))
+        V1 = td_Vertex(topo.vmap.FindKey(i1 + 1))
+        V2 = td_Vertex(topo.vmap.FindKey(i2 + 1))
+        me = _keep(BRepBuilderAPI_MakeEdge(circ, V1, V2, float(p1), float(p2)))
+        if not me.IsDone():
+            continue
+        E = td_Edge(me.Edge())
+        rl = BRepTools_ReShape()
+        rl.Replace(td_Edge(topo.edges[cat[0]].Oriented(TopAbs_FORWARD)),
+                   td_Edge(E.Oriented(TopAbs_FORWARD)))
+        for k in cat[1:]:
+            rl.Remove(td_Edge(topo.edges[k].Oriented(TopAbs_FORWARD)))
+        buono = True
+        for fi in facce:
+            F_new = td_Face(rl.Apply(topo.faces[fi]))
+            up, vp, fwd = _arc_wire_anchor(F_new, E)
+            if fwd is None:
+                buono = False
+                break
+            try:
+                sp = _ArcSurf(_st(BRep_Tool, "Surface")(topo.faces[fi]))
+                c2d, _, devp = make_pcurve(sp, circ, float(p1), float(p2), fwd, up, vp)
+            except Exception:
+                buono = False
+                break
+            if c2d is None or not np.isfinite(devp) or devp > tol:
+                buono = False
+                break
+            bb.UpdateEdge(E, c2d, topo.faces[fi], float(tol))
+        if buono:
+            for fi in facce:
+                if not is_valid(td_Face(rl.Apply(topo.faces[fi]))):
+                    buono = False
+                    break
+        if not buono:
+            continue
+        rs.Replace(td_Edge(topo.edges[cat[0]].Oriented(TopAbs_FORWARD)),
+                   td_Edge(E.Oriented(TopAbs_FORWARD)))
+        for k in cat[1:]:
+            rs.Remove(td_Edge(topo.edges[k].Oriented(TopAbs_FORWARD)))
+        fatti += 1
+    if not fatti:
+        Log.info(f"{title}: nessuna spezzata da promuovere "
+                 f"({len(cands)} catene guardate)   [{time.perf_counter() - t0:.2f}s]")
+        return shape, 0
+    nuovo = rs.Apply(shape)
+    # (!) e adesso il controllo di sempre: se il pezzo intero non regge si
+    # rinuncia a TUTTO. Uno spigolo piu' bello non vale un solido rotto.
+    fe0, fe1 = count_free_edges(shape), count_free_edges(nuovo)
+    v0, v1 = shape_volume(shape), shape_volume(nuovo)
+    male = ""
+    if fe1 > fe0:
+        male = f"spigoli liberi {fe0} -> {fe1}"
+    elif not is_valid(nuovo):
+        male = "BRepCheck: " + ", ".join(check_detail(nuovo, 3))
+    elif abs(v1 - v0) > max(1e-4 * abs(v0), 1e-9):
+        # (!) il volume CAMBIA, ed e' giusto cosi': la spezzata tagliava dentro
+        # l'arco, l'arco vero sta fuori di una freccia. Su test5 fa 0,05 mm3 su
+        # 2.754, cioe' 2 parti su centomila - un ventesimo di quello che si
+        # concede alla Fase C. Il tetto serve solo a prendere i disastri.
+        male = f"volume {v0:.4f} -> {v1:.4f}"
+    if male:
+        Log.warn(f"{title}: {fatti} archi scartati tutti insieme ({male})")
+        return shape, 0
+    n0, n1 = len(topo.edges), len(Topo(nuovo).edges)
+    Log.ok(f"{title}: {fatti:,} spezzate promosse ad arco esatto · "
+           f"spigoli {n0:,} -> {n1:,} · volume {100 * (v1 - v0) / max(abs(v0), 1e-12):+.4f}%"
+           f"   [{time.perf_counter() - t0:.2f}s]")
+    return nuovo, fatti
 
 
 def run_phase(
@@ -6699,6 +7194,20 @@ def parse_args(argv=None):
         "diagonale",
     )
     g.add_argument(
+        "--no-arcs",
+        action="store_true",
+        help="non promuovere ad arco esatto le spezzate che stanno su un cerchio "
+        "(e' l'ultimo passo, dopo tutte le fasi: su test5 toglie 288 spigoli "
+        "senza muovere una faccia)",
+    )
+    g.add_argument(
+        "--arc-tol",
+        type=float,
+        default=None,
+        help="quanto possono distare dal cerchio i vertici della spezzata perche' "
+        "diventi un arco (mm). Default: --tol, e in mancanza 1e-5 x diagonale",
+    )
+    g.add_argument(
         "--min-faces",
         type=int,
         default=4,
@@ -6823,8 +7332,25 @@ def main(argv=None) -> int:
                 )
                 shape = rc.shape
                 results.append(("C" + tag, rc))
+    # (!) ULTIMO PASSO: le spezzate che sono archi del CAD tornano archi. Si fa
+    # alla fine perche' serve il B-Rep finito: un bordo diventa una catena
+    # sostituibile solo dopo che le facce ai suoi due lati sono al loro posto.
+    if not (only_a or args.no_arcs):
+        Log.banner("Archi \u00b7 le spezzate che erano curve del CAD")
+        _V = Topo(shape).vpos
+        _diag = float(np.linalg.norm(_V.max(axis=0) - _V.min(axis=0))) if len(_V) else 1.0
+        _tolA = args.arc_tol if args.arc_tol and args.arc_tol > 0 else (
+            args.tol if args.tol and args.tol > 0 else max(2e-4, 1e-5 * _diag))
+        shape, _ = snap_arcs(shape, _tolA)
     Log.banner("Salvataggio")
+    # ⚠️ L'ULTIMA PAROLA PRIMA DI SCRIVERE. Ogni conversione si valida da sola,
+    # ma i controlli sono locali: se qualcosa e' sfuggito si vede solo qui.
+    if not is_valid(shape):
+        Log.warn("il pezzo finito non passa BRepCheck: " + ", ".join(check_detail(shape, 4)))
     write_step(shape, out_path)
+    _ri, _ = read_step(out_path)
+    if is_valid(shape) and not is_valid(_ri):
+        Log.warn("valido in memoria ma non dopo la scrittura STEP: " + ", ".join(check_detail(_ri, 4)))
     if args.report:
         write_report(f"{stem}_report.txt", args.input, before, after_a, results)
     if args.log:
